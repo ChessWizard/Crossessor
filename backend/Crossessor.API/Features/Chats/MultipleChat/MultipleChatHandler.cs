@@ -16,16 +16,12 @@ namespace Crossessor.API.Features.Chats.MultipleChat;
 public record MultipleChatCommand(
     string Question,
     SystemBehaviourType SystemBehaviourType,
-    List<ModelType> TargetModelTypes) : ICommand<Result<MultipleChatCommandResult>>;
-
-public record MultipleChatCommandResult(
-    List<AnswerResponse> Answers
-);
+    List<ModelType> TargetModelTypes) : ICommand<Result<List<AnswerResponse>>>;
 
 public class MultipleChatHandler(Kernel kernel,
-    CrossessorDbContext dbContext) : ICommandHandler<MultipleChatCommand, Result<MultipleChatCommandResult>>
+    CrossessorDbContext dbContext) : ICommandHandler<MultipleChatCommand, Result<List<AnswerResponse>>>
 {
-    public async Task<Result<MultipleChatCommandResult>> Handle(
+    public async Task<Result<List<AnswerResponse>>> Handle(
         MultipleChatCommand request, 
         CancellationToken cancellationToken)
     {
@@ -34,8 +30,8 @@ public class MultipleChatHandler(Kernel kernel,
         
         await dbContext.SaveChangesAsync(cancellationToken);
         
-        return Result<MultipleChatCommandResult>.Success(
-            new MultipleChatCommandResult(answers), 
+        return Result<List<AnswerResponse>>.Success(
+            answers, 
             (int)HttpStatusCode.OK);
     }
 

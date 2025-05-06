@@ -18,11 +18,7 @@ namespace Crossessor.API.Features.Compares.CrossCompare;
 public record CrossCompareCommand(
     SystemBehaviourType SystemBehaviourType,
     List<Guid> AnswerIds
-) : ICommand<Result<CrossCompareCommandResult>>;
-
-public record CrossCompareCommandResult(
-    List<EvaluationResponse> Evaluations
-);
+) : ICommand<Result<List<EvaluationResponse>>>;
 
 public record EvaluationResult(
     byte Accuracy,
@@ -34,43 +30,59 @@ public record EvaluationResult(
 );
 
 public class CrossCompareHandler(Kernel kernel,
-    CrossessorDbContext dbContext) : ICommandHandler<CrossCompareCommand, Result<CrossCompareCommandResult>>
+    CrossessorDbContext dbContext) : ICommandHandler<CrossCompareCommand, Result<List<EvaluationResponse>>>
 {
-    public async Task<Result<CrossCompareCommandResult>> Handle(
+    public async Task<Result<List<EvaluationResponse>>> Handle(
         CrossCompareCommand request,
         CancellationToken cancellationToken)
     {
-        var answers = await GetAnswersAsync(request.AnswerIds, cancellationToken);
-        if (answers.Count == 0)
+        var answersResult = await GetAnswersAsync(request.AnswerIds, cancellationToken);
+        if (!answersResult.IsSuccessful)
         {
-            return Result<CrossCompareCommandResult>.Error(
-                "No answers found", 
-                (int)HttpStatusCode.BadRequest);
+            return Result<List<EvaluationResponse>>.Error(
+                answersResult.Message,
+                answersResult.HttpStatusCode);
         }
 
-        var evaluations = await ProcessEvaluationsAsync(
-            request.SystemBehaviourType, 
-            answers, 
+        var evaluationsResult = await ProcessEvaluationsAsync(
+            request.SystemBehaviourType,
+            answersResult.Data,
             cancellationToken);
+
+        if (!evaluationsResult.IsSuccessful)
+        {
+            return Result<List<EvaluationResponse>>.Error(
+                evaluationsResult.Message,
+                evaluationsResult.HttpStatusCode);
+        }
 
         await dbContext.SaveChangesAsync(cancellationToken);
 
-        return Result<CrossCompareCommandResult>.Success(
-            new CrossCompareCommandResult(evaluations), 
+        return Result<List<EvaluationResponse>>.Success(
+            evaluationsResult.Data,
             (int)HttpStatusCode.OK);
     }
 
-    private async Task<List<AnswerEntity>> GetAnswersAsync(
+    private async Task<Result<List<AnswerEntity>>> GetAnswersAsync(
         List<Guid> answerIds,
         CancellationToken cancellationToken)
     {
-        return await dbContext.Answers
+        var answers = await dbContext.Answers
             .Include(a => a.Question)
             .Where(answer => answerIds.Contains(answer.Id))
             .ToListAsync(cancellationToken);
+
+        if (answers.Count == 0)
+        {
+            return Result<List<AnswerEntity>>.Error(
+                "No answers found",
+                (int)HttpStatusCode.BadRequest);
+        }
+
+        return Result<List<AnswerEntity>>.Success(answers);
     }
 
-    private async Task<List<EvaluationResponse>> ProcessEvaluationsAsync(
+    private async Task<Result<List<EvaluationResponse>>> ProcessEvaluationsAsync(
         SystemBehaviourType systemBehaviourType,
         List<AnswerEntity> answers,
         CancellationToken cancellationToken)
@@ -79,76 +91,129 @@ public class CrossCompareHandler(Kernel kernel,
 
         foreach (var answer in answers)
         {
-            var crossAnswer = GetCrossAnswer(answers, answer);
-            var evaluation = await CreateEvaluationAsync(
+            var crossAnswerResult = GetCrossAnswer(answers, answer);
+            if (!crossAnswerResult.IsSuccessful)
+            {
+                return Result<List<EvaluationResponse>>.Error(
+                    crossAnswerResult.Message,
+                    crossAnswerResult.HttpStatusCode);
+            }
+
+            var evaluationResult = await CreateEvaluationAsync(
                 systemBehaviourType,
                 answer,
-                crossAnswer,
+                crossAnswerResult.Data,
                 cancellationToken);
 
-            evaluations.Add(evaluation);
+            if (!evaluationResult.IsSuccessful)
+            {
+                return Result<List<EvaluationResponse>>.Error(
+                    evaluationResult.Message,
+                    evaluationResult.HttpStatusCode);
+            }
+
+            evaluations.Add(evaluationResult.Data);
         }
 
-        return evaluations;
+        return Result<List<EvaluationResponse>>.Success(evaluations);
     }
 
-    private static AnswerEntity GetCrossAnswer(List<AnswerEntity> answers, AnswerEntity currentAnswer)
+    private static Result<AnswerEntity> GetCrossAnswer(List<AnswerEntity> answers, AnswerEntity currentAnswer)
     {
-        return answers.FirstOrDefault(a => a.ModelType != currentAnswer.ModelType)
-            ?? throw new InvalidOperationException("No cross answer found");
+        var crossAnswer = answers.FirstOrDefault(a => a.ModelType != currentAnswer.ModelType);
+        if (crossAnswer == null)
+        {
+            return Result<AnswerEntity>.Error(
+                "No cross answer found",
+                (int)HttpStatusCode.BadRequest);
+        }
+
+        return Result<AnswerEntity>.Success(crossAnswer);
     }
 
-    private async Task<EvaluationResponse> CreateEvaluationAsync(
+    private async Task<Result<EvaluationResponse>> CreateEvaluationAsync(
         SystemBehaviourType systemBehaviourType,
         AnswerEntity answer,
         AnswerEntity crossAnswer,
         CancellationToken cancellationToken)
     {
-        var evaluationResponse = await GetEvaluationResponseAsync(
+        var evaluationResponseResult = await GetEvaluationResponseAsync(
             systemBehaviourType,
             answer.Text,
             crossAnswer.ModelType,
             cancellationToken);
 
-        var evaluationResult = ParseEvaluationResponse(evaluationResponse);
+        if (!evaluationResponseResult.IsSuccessful)
+        {
+            return Result<EvaluationResponse>.Error(
+                evaluationResponseResult.Message,
+                evaluationResponseResult.HttpStatusCode);
+        }
+
+        var evaluationResult = ParseEvaluationResponse(evaluationResponseResult.Data);
+        if (!evaluationResult.IsSuccessful)
+        {
+            return Result<EvaluationResponse>.Error(
+                evaluationResult.Message,
+                evaluationResult.HttpStatusCode);
+        }
+
         var evaluation = await CreateAndSaveEvaluationAsync(
             answer,
             crossAnswer,
-            evaluationResult,
+            evaluationResult.Data,
             cancellationToken);
 
-        return evaluation.Adapt<EvaluationResponse>();
+        return Result<EvaluationResponse>.Success(evaluation.Adapt<EvaluationResponse>());
     }
 
-    private async Task<string> GetEvaluationResponseAsync(
+    private async Task<Result<string>> GetEvaluationResponseAsync(
         SystemBehaviourType systemBehaviourType,
         string answerText,
         ModelType evaluatorModelType,
         CancellationToken cancellationToken)
     {
-        var evaluatorServiceId = evaluatorModelType.GetModelByType();
-        var chatProvider = kernel.GetRequiredService<IChatCompletionService>(evaluatorServiceId);
-
-        var chatHistory = new ChatHistory();
-        chatHistory.AddSystemMessage(systemBehaviourType.GetSystemPromptByBehaviour());
-        chatHistory.AddUserMessage(UserBehaviourType.Evaluation.GetUserPromptByBehaviour(answerText));
-
-        var response = await chatProvider.GetChatMessageContentAsync(
-            chatHistory, 
-            cancellationToken: cancellationToken);
-
-        return response?.Content ?? "{}";
-    }
-
-    private static EvaluationResult ParseEvaluationResponse(string response)
-    {
         try
         {
-            if (string.IsNullOrWhiteSpace(response))
+            var evaluatorServiceId = evaluatorModelType.GetModelByType();
+            var chatProvider = kernel.GetRequiredService<IChatCompletionService>(evaluatorServiceId);
+
+            var chatHistory = new ChatHistory();
+            chatHistory.AddSystemMessage(systemBehaviourType.GetSystemPromptByBehaviour());
+            chatHistory.AddUserMessage(UserBehaviourType.Evaluation.GetUserPromptByBehaviour(answerText));
+
+            var response = await chatProvider.GetChatMessageContentAsync(
+                chatHistory,
+                cancellationToken: cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(response?.Content))
             {
-                throw new InvalidOperationException("Empty response received");
+                return Result<string>.Error(
+                    "Empty response received from chat provider",
+                    (int)HttpStatusCode.BadRequest);
             }
 
+            return Result<string>.Success(response.Content);
+        }
+        catch (Exception ex)
+        {
+            return Result<string>.Error(
+                $"Error getting evaluation response: {ex.Message}",
+                (int)HttpStatusCode.InternalServerError);
+        }
+    }
+
+    private static Result<EvaluationResult> ParseEvaluationResponse(string response)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            return Result<EvaluationResult>.Error(
+                "Empty response received",
+                (int)HttpStatusCode.BadRequest);
+        }
+
+        try
+        {
             var cleanResponse = response.ExtractPromptResponseJson();
 
             using var json = JsonDocument.Parse(cleanResponse);
@@ -160,7 +225,9 @@ public class CrossCompareHandler(Kernel kernel,
                 !root.TryGetProperty("neutrality", out var neutralityElement) ||
                 !root.TryGetProperty("comment", out var commentElement))
             {
-                throw new InvalidOperationException("Required properties are missing in the response");
+                return Result<EvaluationResult>.Error(
+                    "Required properties are missing in the response",
+                    (int)HttpStatusCode.BadRequest);
             }
 
             var accuracy = accuracyElement.GetInt32();
@@ -174,27 +241,33 @@ public class CrossCompareHandler(Kernel kernel,
                 clarity < 0 || clarity > 100 ||
                 neutrality < 0 || neutrality > 100)
             {
-                throw new InvalidOperationException("Scores must be between 0 and 100");
+                return Result<EvaluationResult>.Error(
+                    "Scores must be between 0 and 100",
+                    (int)HttpStatusCode.BadRequest);
             }
-            
+
             var overallScore = EvaluationHelper.CalculateOverallScore(accuracy, completeness, clarity, neutrality);
-            
-            return new EvaluationResult(
+
+            return Result<EvaluationResult>.Success(new EvaluationResult(
                 (byte)accuracy,
                 (byte)completeness,
                 (byte)clarity,
                 (byte)neutrality,
                 overallScore,
                 comment
-            );
+            ));
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException($"Invalid JSON format: {ex.Message}", ex);
+            return Result<EvaluationResult>.Error(
+                $"Invalid JSON format: {ex.Message}",
+                (int)HttpStatusCode.BadRequest);
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Error parsing evaluation response: {ex.Message}", ex);
+            return Result<EvaluationResult>.Error(
+                $"Error parsing evaluation response: {ex.Message}",
+                (int)HttpStatusCode.InternalServerError);
         }
     }
 

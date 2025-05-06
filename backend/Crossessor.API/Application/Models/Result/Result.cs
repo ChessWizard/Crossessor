@@ -6,6 +6,11 @@ public class Result<TData> : BaseResult<TData>
     {
         return new Result<TData> { Data = data, HttpStatusCode = statusCode };
     }
+    
+    public static Result<TData> Success(TData data)
+    {
+        return new Result<TData> { Data = data };
+    }
 
     public static Result<TData> Success(string message, int statusCode)
     {
