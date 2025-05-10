@@ -15,7 +15,7 @@ public class CrossCompareEndpoint : ICarterModule
 {
     public void AddRoutes(IEndpointRouteBuilder app)
     {
-        app.MapPost(pattern: "/Compare",
+        app.MapPost(pattern: "/Compare/Cross",
             handler: async (CrossCompareRequest request, ISender sender) =>
             {
                 var command = request.Adapt<CrossCompareCommand>();

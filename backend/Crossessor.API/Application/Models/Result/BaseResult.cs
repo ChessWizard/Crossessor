@@ -10,7 +10,7 @@ public class BaseResult<TData>
 
     public int HttpStatusCode { get; set; }
 
-    [JsonIgnore] public bool IsSuccessful { get; set; }
+    [JsonIgnore] public bool IsSuccessful { get; set; } = true;
 
     public ErrorResult ErrorDto { get; set; }
 }

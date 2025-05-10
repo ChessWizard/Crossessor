@@ -16,7 +16,7 @@ public class MultipleChatEndpoint : ICarterModule
 {
     public void AddRoutes(IEndpointRouteBuilder app)
     {
-        app.MapPost(pattern: "/Chat",
+        app.MapPost(pattern: "/Chats/Multiple",
             handler: async (MultipleChatRequest request, ISender sender) =>
             {
                 var command = request.Adapt<MultipleChatCommand>();
